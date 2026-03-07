@@ -40,6 +40,7 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
             }
         }
     }
+    files.sort();
     files
 }
 

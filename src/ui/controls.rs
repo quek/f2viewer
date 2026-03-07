@@ -7,4 +7,8 @@ pub enum PaneAction {
     SplitVertical(PaneId),
     Close(PaneId),
     SelectDirectory(PaneId),
+    TogglePause(PaneId),
+    DeleteCurrentImage(PaneId),
+    NavigateForward(PaneId),
+    NavigateBackward(PaneId),
 }

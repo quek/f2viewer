@@ -1,6 +1,6 @@
 use egui::{Color32, Rect, Stroke, StrokeKind, Vec2, vec2};
 
-use crate::pane::ImagePane;
+use crate::pane::{DisplayMode, ImagePane};
 use crate::split_tree::PaneId;
 use crate::ui::controls::PaneAction;
 
@@ -15,11 +15,18 @@ pub fn render_pane(
     let rect = ui.available_rect_before_wrap();
     ui.allocate_rect(rect, egui::Sense::hover());
 
-    // Draw border
+    let hovered = ui.rect_contains_pointer(rect);
+
+    // Draw border: highlight when hovered
+    let border_color = if hovered {
+        Color32::from_rgb(80, 140, 220)
+    } else {
+        Color32::DARK_GRAY
+    };
     ui.painter().rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0, Color32::DARK_GRAY),
+        Stroke::new(if hovered { 2.0 } else { 1.0 }, border_color),
         StrokeKind::Inside,
     );
 
@@ -45,8 +52,59 @@ pub fn render_pane(
         );
     }
 
-    // Context menu for controls
+    // Filename overlay at bottom
+    if let Some(ref path) = pane.current_image_path {
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        let text_pos = egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0);
+        // Shadow
+        ui.painter().text(
+            text_pos + vec2(1.0, 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            &*filename,
+            egui::FontId::proportional(12.0),
+            Color32::BLACK,
+        );
+        ui.painter().text(
+            text_pos,
+            egui::Align2::LEFT_BOTTOM,
+            &*filename,
+            egui::FontId::proportional(12.0),
+            Color32::from_gray(200),
+        );
+    }
+
+    // Pause indicator
+    if pane.paused && pane.texture.is_some() {
+        ui.painter().text(
+            egui::pos2(rect.right() - 6.0, rect.top() + 6.0),
+            egui::Align2::RIGHT_TOP,
+            "⏸",
+            egui::FontId::proportional(16.0),
+            Color32::from_white_alpha(180),
+        );
+    }
+
     let mut action = None;
+
+    // Keyboard shortcuts when hovered
+    if hovered {
+        ui.ctx().input(|i| {
+            if i.key_pressed(egui::Key::Space) {
+                action = Some(PaneAction::TogglePause(pane_id));
+            }
+            if i.key_pressed(egui::Key::D) {
+                action = Some(PaneAction::DeleteCurrentImage(pane_id));
+            }
+            if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowDown) {
+                action = Some(PaneAction::NavigateForward(pane_id));
+            }
+            if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp) {
+                action = Some(PaneAction::NavigateBackward(pane_id));
+            }
+        });
+    }
+
+    // Context menu for controls
     let interact = ui.interact(rect, ui.id().with(("pane_ctx", pane_id)), egui::Sense::click());
     interact.context_menu(|ui| {
         if ui.button("↔ 縦分割").clicked() {
@@ -67,8 +125,6 @@ pub fn render_pane(
         // Duration slider
         ui.horizontal(|ui| {
             ui.label("表示間隔:");
-            // Use a custom mapping: slider [0..1] -> quadratic curve
-            // t^2 * (max - min) + min gives more resolution at lower values
             let min = 0.5_f32;
             let max = 60.0_f32;
             let t = ((pane.display_duration - min) / (max - min)).sqrt();
@@ -84,10 +140,34 @@ pub fn render_pane(
             }
         });
 
+        // Display mode toggle
+        let mode_label = match pane.display_mode {
+            DisplayMode::Random => "🔀 ランダム → 順番に変更",
+            DisplayMode::Sequential => "🔢 順番 → ランダムに変更",
+        };
+        if ui.button(mode_label).clicked() {
+            pane.display_mode = match pane.display_mode {
+                DisplayMode::Random => {
+                    // Sort and start from beginning
+                    pane.seq_index = 0;
+                    DisplayMode::Sequential
+                }
+                DisplayMode::Sequential => DisplayMode::Random,
+            };
+            pane.paused = false;
+            ui.close_menu();
+        }
+
         // Pause toggle
         let pause_label = if pane.paused { "▶ 再開" } else { "⏸ 一時停止" };
         if ui.button(pause_label).clicked() {
             pane.paused = !pane.paused;
+            if !pane.paused && pane.display_mode == DisplayMode::Sequential {
+                // Resume from current position (reset if at end)
+                if pane.seq_index >= pane.image_files.len() {
+                    pane.seq_index = 0;
+                }
+            }
             ui.close_menu();
         }
 
