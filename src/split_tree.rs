@@ -8,7 +8,7 @@ pub enum SplitDirection {
     Vertical,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SplitTree {
     Leaf {
         id: PaneId,

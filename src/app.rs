@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use egui::Color32;
+use serde::{Deserialize, Serialize};
 
 use crate::image_loader;
 use crate::pane::ImagePane;
@@ -9,23 +11,49 @@ use crate::split_tree::{PaneId, SplitDirection, SplitTree};
 use crate::ui::controls::PaneAction;
 use crate::ui::tree_ui;
 
+/// Serializable state for persistence across restarts.
+#[derive(Serialize, Deserialize)]
+struct SaveState {
+    tree: SplitTree,
+    panes: HashMap<PaneId, ImagePane>,
+    next_pane_id: PaneId,
+}
+
 pub struct F2ViewerApp {
     tree: SplitTree,
     panes: HashMap<PaneId, ImagePane>,
     next_pane_id: PaneId,
+    dirty: bool,
 }
 
 impl F2ViewerApp {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         Self::setup_fonts(&cc.egui_ctx);
 
-        let id = 0;
-        let mut panes = HashMap::new();
-        panes.insert(id, ImagePane::default());
-        Self {
-            tree: SplitTree::new_leaf(id),
-            panes,
-            next_pane_id: 1,
+        if let Some(state) = Self::load_state() {
+            let mut app = Self {
+                tree: state.tree,
+                panes: state.panes,
+                next_pane_id: state.next_pane_id,
+                dirty: false,
+            };
+            // Rescan directories for all restored panes
+            for pane in app.panes.values_mut() {
+                if let Some(ref dir) = pane.directory {
+                    pane.image_files = image_loader::scan_directory(dir);
+                }
+            }
+            app
+        } else {
+            let id = 0;
+            let mut panes = HashMap::new();
+            panes.insert(id, ImagePane::default());
+            Self {
+                tree: SplitTree::new_leaf(id),
+                panes,
+                next_pane_id: 1,
+                dirty: false,
+            }
         }
     }
 
@@ -34,7 +62,6 @@ impl F2ViewerApp {
             .unwrap_or_default()
             .join("HackGen35ConsoleNF-Regular.ttf");
         let font_data = std::fs::read(&font_path).unwrap_or_else(|_| {
-            // Fallback: user-local fonts on Windows
             let local = std::path::PathBuf::from(
                 r"C:\Users\ancient\AppData\Local\Microsoft\Windows\Fonts\HackGen35ConsoleNF-Regular.ttf",
             );
@@ -51,7 +78,6 @@ impl F2ViewerApp {
             "HackGen".to_owned(),
             egui::FontData::from_owned(font_data).into(),
         );
-        // Prepend HackGen to proportional and monospace families
         fonts
             .families
             .entry(egui::FontFamily::Proportional)
@@ -65,19 +91,57 @@ impl F2ViewerApp {
         ctx.set_fonts(fonts);
     }
 
+    fn state_file_path() -> PathBuf {
+        let dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("f2viewer");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("state.json")
+    }
+
+    fn load_state() -> Option<SaveState> {
+        let path = Self::state_file_path();
+        let data = std::fs::read_to_string(&path).ok()?;
+        match serde_json::from_str(&data) {
+            Ok(state) => {
+                log::info!("Restored state from {:?}", path);
+                Some(state)
+            }
+            Err(e) => {
+                log::warn!("Failed to parse state file: {}", e);
+                None
+            }
+        }
+    }
+
+    fn save_state(&self) {
+        let state = SaveState {
+            tree: self.tree.clone(),
+            panes: self.panes.iter().map(|(k, v)| (*k, v.clone_config())).collect(),
+            next_pane_id: self.next_pane_id,
+        };
+        let path = Self::state_file_path();
+        match serde_json::to_string_pretty(&state) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::warn!("Failed to save state: {}", e);
+                }
+            }
+            Err(e) => log::warn!("Failed to serialize state: {}", e),
+        }
+    }
+
     fn alloc_id(&mut self) -> PaneId {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
         id
     }
 
-    /// Update image timers for all panes. Loads next image when duration elapses.
     fn update_timers(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         let mut min_remaining = Duration::from_secs(60);
 
         for pane in self.panes.values_mut() {
-            // Rescan directory if needed
             if pane.needs_rescan {
                 if let Some(ref dir) = pane.directory {
                     pane.image_files = image_loader::scan_directory(dir);
@@ -107,7 +171,6 @@ impl F2ViewerApp {
                 }
             }
 
-            // Calculate remaining time for repaint scheduling
             if let Some(last) = pane.last_switch {
                 let elapsed = now.duration_since(last);
                 if elapsed < duration {
@@ -117,14 +180,15 @@ impl F2ViewerApp {
             }
         }
 
-        // Schedule next repaint
         if !self.panes.is_empty() {
             ctx.request_repaint_after(min_remaining);
         }
     }
 
-    /// Process deferred actions from UI interactions.
     fn process_actions(&mut self, actions: Vec<PaneAction>) {
+        if actions.is_empty() {
+            return;
+        }
         for action in actions {
             match action {
                 PaneAction::SplitVertical(pane_id) => {
@@ -152,13 +216,13 @@ impl F2ViewerApp {
                 }
             }
         }
+        self.dirty = true;
     }
 
     fn split_pane(&mut self, pane_id: PaneId, direction: SplitDirection) {
         let new_id_1 = self.alloc_id();
         let new_id_2 = self.alloc_id();
 
-        // Create new panes inheriting from the original
         let (pane1, pane2) = if let Some(original) = self.panes.get(&pane_id) {
             (
                 ImagePane::inherit_from(original),
@@ -195,10 +259,15 @@ impl eframe::App for F2ViewerApp {
                     &mut actions,
                 );
 
-                // Handle separator dragging within the same UI
                 tree_ui::handle_separator_drag(ui, &mut self.tree, panel_rect);
             });
 
         self.process_actions(actions);
+
+        // Save state when dirty and separator drag ends
+        if self.dirty || ctx.input(|i| i.pointer.any_released()) {
+            self.save_state();
+            self.dirty = false;
+        }
     }
 }

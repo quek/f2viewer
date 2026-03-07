@@ -51,4 +51,14 @@ impl ImagePane {
             needs_rescan: false,
         }
     }
+
+    /// Clone only the serializable config fields (for persistence).
+    pub fn clone_config(&self) -> Self {
+        Self {
+            directory: self.directory.clone(),
+            display_duration: self.display_duration,
+            paused: self.paused,
+            ..Default::default()
+        }
+    }
 }
