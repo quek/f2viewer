@@ -15,6 +15,12 @@ struct PendingDelete {
     path: PathBuf,
     pos: egui::Pos2,
 }
+
+/// State for fullscreen mode.
+struct FullscreenState {
+    pane_id: PaneId,
+    saved_paused: HashMap<PaneId, bool>,
+}
 use crate::ui::controls::PaneAction;
 use crate::ui::tree_ui;
 
@@ -45,6 +51,7 @@ pub struct F2ViewerApp {
     next_pane_id: PaneId,
     dirty: bool,
     pending_delete: Option<PendingDelete>,
+    fullscreen: Option<FullscreenState>,
 }
 
 impl F2ViewerApp {
@@ -58,6 +65,7 @@ impl F2ViewerApp {
                 next_pane_id: state.next_pane_id,
                 dirty: false,
                 pending_delete: None,
+                fullscreen: None,
             };
             // Rescan directories and load initial image for all restored panes
             for pane in app.panes.values_mut() {
@@ -85,6 +93,7 @@ impl F2ViewerApp {
                 next_pane_id: 1,
                 dirty: false,
                 pending_delete: None,
+                fullscreen: None,
             }
         }
     }
@@ -291,6 +300,9 @@ impl F2ViewerApp {
                 PaneAction::NavigateBackward(pane_id) => {
                     self.navigate_image(pane_id, ctx, -1);
                 }
+                PaneAction::Fullscreen(pane_id) => {
+                    self.enter_fullscreen(pane_id);
+                }
             }
         }
         self.dirty = true;
@@ -430,6 +442,32 @@ impl F2ViewerApp {
         }
         self.dirty = true;
     }
+
+    fn enter_fullscreen(&mut self, pane_id: PaneId) {
+        let saved_paused = self.panes.iter().map(|(&id, p)| (id, p.paused)).collect();
+        for pane in self.panes.values_mut() {
+            pane.paused = true;
+        }
+        self.fullscreen = Some(FullscreenState {
+            pane_id,
+            saved_paused,
+        });
+    }
+
+    fn exit_fullscreen(&mut self) {
+        if let Some(fs) = self.fullscreen.take() {
+            let now = Instant::now();
+            for (&id, pane) in self.panes.iter_mut() {
+                if let Some(&was_paused) = fs.saved_paused.get(&id) {
+                    pane.paused = was_paused;
+                    // Reset timer so images don't switch immediately
+                    if !was_paused {
+                        pane.last_switch = Some(now);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for F2ViewerApp {
@@ -442,24 +480,60 @@ impl eframe::App for F2ViewerApp {
         self.update_timers(ctx);
 
         let mut actions = Vec::new();
-        let is_root_single = self.tree.is_single_leaf();
+        let mut exit_fs = false;
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(Color32::BLACK))
-            .show(ctx, |ui| {
-                let panel_rect = ui.max_rect();
-                tree_ui::render_tree(
-                    ui,
-                    &self.tree,
-                    &mut self.panes,
-                    is_root_single,
-                    &mut actions,
-                );
+        if let Some(ref fs) = self.fullscreen {
+            // Fullscreen: render single pane image filling the entire panel
+            let fs_pane_id = fs.pane_id;
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(Color32::BLACK))
+                .show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    ui.allocate_rect(rect, egui::Sense::hover());
+                    if let Some(pane) = self.panes.get(&fs_pane_id) {
+                        if let Some(ref texture) = pane.texture {
+                            let tex_size = texture.size_vec2();
+                            let scale = (rect.width() / tex_size.x).min(rect.height() / tex_size.y);
+                            let fitted = egui::vec2(tex_size.x * scale, tex_size.y * scale);
+                            let offset = (rect.size() - fitted) * 0.5;
+                            let image_rect = egui::Rect::from_min_size(rect.min + offset, fitted);
+                            ui.painter().image(
+                                texture.id(),
+                                image_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                        }
+                    }
+                });
 
-                tree_ui::handle_separator_drag(ui, &mut self.tree, panel_rect);
-            });
+            // Check exit after rendering so F key isn't seen by pane_ui in the same frame
+            if ctx.input(|i| i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Escape)) {
+                exit_fs = true;
+            }
+        } else {
+            let is_root_single = self.tree.is_single_leaf();
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(Color32::BLACK))
+                .show(ctx, |ui| {
+                    let panel_rect = ui.max_rect();
+                    tree_ui::render_tree(
+                        ui,
+                        &self.tree,
+                        &mut self.panes,
+                        is_root_single,
+                        &mut actions,
+                    );
+
+                    tree_ui::handle_separator_drag(ui, &mut self.tree, panel_rect);
+                });
+        }
 
         self.process_actions(actions, ctx);
+
+        if exit_fs {
+            self.exit_fullscreen();
+        }
 
         // Delete confirmation dialog at cursor position
         let mut do_confirm = false;

@@ -11,4 +11,5 @@ pub enum PaneAction {
     DeleteCurrentImage(PaneId),
     NavigateForward(PaneId),
     NavigateBackward(PaneId),
+    Fullscreen(PaneId),
 }

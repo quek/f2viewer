@@ -101,6 +101,9 @@ pub fn render_pane(
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp) {
                 action = Some(PaneAction::NavigateBackward(pane_id));
             }
+            if i.key_pressed(egui::Key::F) {
+                action = Some(PaneAction::Fullscreen(pane_id));
+            }
         });
     }
 
