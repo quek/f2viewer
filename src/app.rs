@@ -14,6 +14,7 @@ struct PendingDelete {
     pane_id: PaneId,
     path: PathBuf,
     pos: egui::Pos2,
+    saved_paused: HashMap<PaneId, bool>,
 }
 
 /// State for fullscreen mode.
@@ -411,13 +412,36 @@ impl F2ViewerApp {
         let pos = ctx.input(|i| {
             i.pointer.hover_pos().unwrap_or(egui::pos2(100.0, 100.0))
         });
-        self.pending_delete = Some(PendingDelete { pane_id, path, pos });
+        let saved_paused = self.panes.iter().map(|(&id, p)| (id, p.paused)).collect();
+        for pane in self.panes.values_mut() {
+            pane.paused = true;
+        }
+        self.pending_delete = Some(PendingDelete {
+            pane_id,
+            path,
+            pos,
+            saved_paused,
+        });
+    }
+
+    fn restore_paused(&mut self, saved_paused: &HashMap<PaneId, bool>) {
+        let now = Instant::now();
+        for (&id, pane) in self.panes.iter_mut() {
+            if let Some(&was_paused) = saved_paused.get(&id) {
+                pane.paused = was_paused;
+                if !was_paused {
+                    pane.last_switch = Some(now);
+                }
+            }
+        }
     }
 
     fn confirm_delete(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.pending_delete.take() else {
             return;
         };
+
+        self.restore_paused(&pending.saved_paused);
 
         if let Err(e) = trash::delete(&pending.path) {
             log::warn!("Failed to trash {:?}: {}", pending.path, e);
@@ -428,17 +452,36 @@ impl F2ViewerApp {
             return;
         };
 
-        // Remove from image list and immediately show next image
+        // Remove from image list
         pane.image_files.retain(|p| p != &pending.path);
         pane.current_image_path = None;
         pane.texture = None;
         pane.last_switch = None;
 
-        // Load next image right away
-        if let Some(next) = image_loader::pick_random_image(&pane.image_files, None) {
-            pane.texture = image_loader::load_texture(ctx, &next);
-            pane.current_image_path = Some(next);
-            pane.last_switch = Some(Instant::now());
+        // Show next image in history (forward/newer)
+        let mut found = false;
+        let mut pos = pane.history_pos;
+        while pos > 0 {
+            pos -= 1;
+            let idx = pane.history.len() - 1 - pos;
+            if pane.history[idx].exists() {
+                pane.history_pos = pos;
+                let path = pane.history[idx].clone();
+                pane.texture = image_loader::load_texture(ctx, &path);
+                pane.current_image_path = Some(path);
+                pane.last_switch = Some(Instant::now());
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            pane.history_pos = 0;
+            if let Some(next) = image_loader::pick_random_image(&pane.image_files, None) {
+                pane.texture = image_loader::load_texture(ctx, &next);
+                pane.current_image_path = Some(next.clone());
+                pane.last_switch = Some(Instant::now());
+                pane.history.push(next);
+            }
         }
         self.dirty = true;
     }
@@ -456,16 +499,7 @@ impl F2ViewerApp {
 
     fn exit_fullscreen(&mut self) {
         if let Some(fs) = self.fullscreen.take() {
-            let now = Instant::now();
-            for (&id, pane) in self.panes.iter_mut() {
-                if let Some(&was_paused) = fs.saved_paused.get(&id) {
-                    pane.paused = was_paused;
-                    // Reset timer so images don't switch immediately
-                    if !was_paused {
-                        pane.last_switch = Some(now);
-                    }
-                }
-            }
+            self.restore_paused(&fs.saved_paused);
         }
     }
 }
@@ -507,9 +541,18 @@ impl eframe::App for F2ViewerApp {
                     }
                 });
 
-            // Check exit after rendering so F key isn't seen by pane_ui in the same frame
+            // Keyboard shortcuts in fullscreen
             if ctx.input(|i| i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Escape)) {
                 exit_fs = true;
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::D)) {
+                self.delete_current_image(fs_pane_id, ctx);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowDown)) {
+                self.navigate_image(fs_pane_id, ctx, 1);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp)) {
+                self.navigate_image(fs_pane_id, ctx, -1);
             }
         } else {
             let is_root_single = self.tree.is_single_leaf();
@@ -579,7 +622,9 @@ impl eframe::App for F2ViewerApp {
         if do_confirm {
             self.confirm_delete(ctx);
         } else if do_cancel {
-            self.pending_delete = None;
+            if let Some(pending) = self.pending_delete.take() {
+                self.restore_paused(&pending.saved_paused);
+            }
         }
 
         // Save state when dirty and separator drag ends
