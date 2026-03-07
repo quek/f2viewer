@@ -97,18 +97,6 @@ impl SplitTree {
         }
     }
 
-    /// Collect all leaf IDs in the tree.
-    pub fn leaf_ids(&self) -> Vec<PaneId> {
-        match self {
-            SplitTree::Leaf { id } => vec![*id],
-            SplitTree::Split { first, second, .. } => {
-                let mut ids = first.leaf_ids();
-                ids.extend(second.leaf_ids());
-                ids
-            }
-        }
-    }
-
     /// Returns true if this is the only leaf (root is a leaf).
     pub fn is_single_leaf(&self) -> bool {
         matches!(self, SplitTree::Leaf { .. })
