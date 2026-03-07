@@ -104,6 +104,9 @@ pub fn render_pane(
             if i.key_pressed(egui::Key::F) {
                 action = Some(PaneAction::Fullscreen(pane_id));
             }
+            if i.key_pressed(egui::Key::C) {
+                action = Some(PaneAction::CopyImage(pane_id));
+            }
         });
     }
 

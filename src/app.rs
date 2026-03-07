@@ -1,11 +1,91 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 
 use crate::image_loader;
+
+/// Copy a file to the clipboard as CF_HDROP so it can be pasted in Explorer etc.
+fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    const CF_HDROP: u32 = 15;
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    const GMEM_ZEROINIT: u32 = 0x0040;
+
+    #[repr(C)]
+    struct DropFiles {
+        p_files: u32,
+        pt_x: i32,
+        pt_y: i32,
+        f_nc: i32,
+        f_wide: i32,
+    }
+
+    extern "system" {
+        fn OpenClipboard(hwnd: *mut std::ffi::c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn EmptyClipboard() -> i32;
+        fn SetClipboardData(format: u32, data: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn GlobalAlloc(flags: u32, bytes: usize) -> *mut std::ffi::c_void;
+        fn GlobalLock(hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn GlobalUnlock(hmem: *mut std::ffi::c_void) -> i32;
+        fn GlobalFree(hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    // canonicalize to get absolute path, then strip \\?\ prefix for Explorer compatibility
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let path_str = canonical.to_string_lossy();
+    let clean = path_str.strip_prefix("\\\\?\\").unwrap_or(&path_str);
+    let wide: Vec<u16> = OsStr::new(clean)
+        .encode_wide()
+        .chain(std::iter::once(0)) // null terminator
+        .chain(std::iter::once(0)) // double null terminator
+        .collect();
+
+    unsafe {
+        let header_size = std::mem::size_of::<DropFiles>();
+        let total = header_size + wide.len() * std::mem::size_of::<u16>();
+
+        let hmem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total);
+        if hmem.is_null() {
+            return Err("GlobalAlloc failed".into());
+        }
+
+        let ptr = GlobalLock(hmem);
+        if ptr.is_null() {
+            GlobalFree(hmem);
+            return Err("GlobalLock failed".into());
+        }
+
+        let df = ptr as *mut DropFiles;
+        (*df).p_files = header_size as u32;
+        (*df).f_wide = 1;
+
+        let dest = (ptr as *mut u8).add(header_size) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), dest, wide.len());
+
+        GlobalUnlock(hmem);
+
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            GlobalFree(hmem);
+            return Err("OpenClipboard failed".into());
+        }
+
+        EmptyClipboard();
+        if SetClipboardData(CF_HDROP, hmem).is_null() {
+            GlobalFree(hmem);
+            CloseClipboard();
+            return Err("SetClipboardData failed".into());
+        }
+
+        CloseClipboard();
+        Ok(())
+    }
+}
 use crate::pane::{DisplayMode, ImagePane};
 use crate::split_tree::{PaneId, SplitDirection, SplitTree};
 
@@ -53,6 +133,7 @@ pub struct F2ViewerApp {
     dirty: bool,
     pending_delete: Option<PendingDelete>,
     fullscreen: Option<FullscreenState>,
+    copy_toast: Option<Instant>,
 }
 
 impl F2ViewerApp {
@@ -67,6 +148,7 @@ impl F2ViewerApp {
                 dirty: false,
                 pending_delete: None,
                 fullscreen: None,
+                copy_toast: None,
             };
             // Rescan directories and load initial image for all restored panes
             for pane in app.panes.values_mut() {
@@ -95,6 +177,7 @@ impl F2ViewerApp {
                 dirty: false,
                 pending_delete: None,
                 fullscreen: None,
+                copy_toast: None,
             }
         }
     }
@@ -304,6 +387,9 @@ impl F2ViewerApp {
                 PaneAction::Fullscreen(pane_id) => {
                     self.enter_fullscreen(pane_id);
                 }
+                PaneAction::CopyImage(pane_id) => {
+                    self.copy_image_to_clipboard(pane_id);
+                }
             }
         }
         self.dirty = true;
@@ -497,6 +583,19 @@ impl F2ViewerApp {
         });
     }
 
+    fn copy_image_to_clipboard(&mut self, pane_id: PaneId) {
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return;
+        };
+        let Some(ref path) = pane.current_image_path else {
+            return;
+        };
+        match copy_file_to_clipboard(path) {
+            Ok(()) => self.copy_toast = Some(Instant::now()),
+            Err(e) => log::warn!("Failed to copy to clipboard: {}", e),
+        }
+    }
+
     fn exit_fullscreen(&mut self) {
         if let Some(fs) = self.fullscreen.take() {
             self.restore_paused(&fs.saved_paused);
@@ -553,6 +652,9 @@ impl eframe::App for F2ViewerApp {
             }
             if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp)) {
                 self.navigate_image(fs_pane_id, ctx, -1);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::C)) {
+                self.copy_image_to_clipboard(fs_pane_id);
             }
         } else {
             let is_root_single = self.tree.is_single_leaf();
@@ -624,6 +726,34 @@ impl eframe::App for F2ViewerApp {
         } else if do_cancel {
             if let Some(pending) = self.pending_delete.take() {
                 self.restore_paused(&pending.saved_paused);
+            }
+        }
+
+        // Copy toast notification
+        if let Some(toast_time) = self.copy_toast {
+            let elapsed = Instant::now().duration_since(toast_time).as_secs_f32();
+            if elapsed < 1.0 {
+                let alpha = ((1.0 - elapsed) * 255.0) as u8;
+                let screen = ctx.screen_rect();
+                let pos = egui::pos2(screen.center().x, screen.bottom() - 40.0);
+                egui::Area::new(egui::Id::new("copy_toast"))
+                    .fixed_pos(pos)
+                    .pivot(egui::Align2::CENTER_BOTTOM)
+                    .order(egui::Order::Foreground)
+                    .interactable(false)
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style())
+                            .fill(Color32::from_rgba_unmultiplied(40, 40, 40, alpha))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("クリップボードにコピーしました")
+                                        .color(Color32::from_rgba_unmultiplied(255, 255, 255, alpha)),
+                                );
+                            });
+                    });
+                ctx.request_repaint();
+            } else {
+                self.copy_toast = None;
             }
         }
 

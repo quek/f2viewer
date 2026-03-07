@@ -12,4 +12,5 @@ pub enum PaneAction {
     NavigateForward(PaneId),
     NavigateBackward(PaneId),
     Fullscreen(PaneId),
+    CopyImage(PaneId),
 }
