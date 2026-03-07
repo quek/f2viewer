@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::image_loader;
 use crate::pane::{DisplayMode, ImagePane};
 use crate::split_tree::{PaneId, SplitDirection, SplitTree};
+
+/// State for the in-app delete confirmation dialog.
+struct PendingDelete {
+    pane_id: PaneId,
+    path: PathBuf,
+    pos: egui::Pos2,
+}
 use crate::ui::controls::PaneAction;
 use crate::ui::tree_ui;
 
@@ -37,6 +44,7 @@ pub struct F2ViewerApp {
     panes: HashMap<PaneId, ImagePane>,
     next_pane_id: PaneId,
     dirty: bool,
+    pending_delete: Option<PendingDelete>,
 }
 
 impl F2ViewerApp {
@@ -49,11 +57,21 @@ impl F2ViewerApp {
                 panes: state.panes,
                 next_pane_id: state.next_pane_id,
                 dirty: false,
+                pending_delete: None,
             };
-            // Rescan directories for all restored panes
+            // Rescan directories and load initial image for all restored panes
             for pane in app.panes.values_mut() {
                 if let Some(ref dir) = pane.directory {
                     pane.image_files = image_loader::scan_directory(dir);
+                    if !pane.image_files.is_empty() {
+                        let next = image_loader::pick_random_image(&pane.image_files, None);
+                        if let Some(path) = next {
+                            pane.texture = image_loader::load_texture(&cc.egui_ctx, &path);
+                            pane.current_image_path = Some(path.clone());
+                            pane.last_switch = Some(Instant::now());
+                            pane.history.push(path);
+                        }
+                    }
                 }
             }
             app
@@ -66,6 +84,7 @@ impl F2ViewerApp {
                 panes,
                 next_pane_id: 1,
                 dirty: false,
+                pending_delete: None,
             }
         }
     }
@@ -370,31 +389,35 @@ impl F2ViewerApp {
     }
 
     fn delete_current_image(&mut self, pane_id: PaneId, ctx: &egui::Context) {
-        let Some(pane) = self.panes.get_mut(&pane_id) else {
+        let Some(pane) = self.panes.get(&pane_id) else {
             return;
         };
         let Some(path) = pane.current_image_path.clone() else {
             return;
         };
 
-        // Confirmation dialog showing full path
-        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-        let confirmed = rfd::MessageDialog::new()
-            .set_title("画像の削除")
-            .set_description(format!("「{}」をゴミ箱に移動しますか？", filename))
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-        if confirmed != rfd::MessageDialogResult::Yes {
+        let pos = ctx.input(|i| {
+            i.pointer.hover_pos().unwrap_or(egui::pos2(100.0, 100.0))
+        });
+        self.pending_delete = Some(PendingDelete { pane_id, path, pos });
+    }
+
+    fn confirm_delete(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_delete.take() else {
+            return;
+        };
+
+        if let Err(e) = trash::delete(&pending.path) {
+            log::warn!("Failed to trash {:?}: {}", pending.path, e);
             return;
         }
 
-        if let Err(e) = trash::delete(&path) {
-            log::warn!("Failed to trash {:?}: {}", path, e);
+        let Some(pane) = self.panes.get_mut(&pending.pane_id) else {
             return;
-        }
+        };
 
         // Remove from image list and immediately show next image
-        pane.image_files.retain(|p| p != &path);
+        pane.image_files.retain(|p| p != &pending.path);
         pane.current_image_path = None;
         pane.texture = None;
         pane.last_switch = None;
@@ -405,6 +428,7 @@ impl F2ViewerApp {
             pane.current_image_path = Some(next);
             pane.last_switch = Some(Instant::now());
         }
+        self.dirty = true;
     }
 }
 
@@ -436,6 +460,53 @@ impl eframe::App for F2ViewerApp {
             });
 
         self.process_actions(actions, ctx);
+
+        // Delete confirmation dialog at cursor position
+        let mut do_confirm = false;
+        let mut do_cancel = false;
+        if let Some(ref pending) = self.pending_delete {
+            let filename = pending
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            egui::Area::new(egui::Id::new("delete_confirm"))
+                .fixed_pos(pending.pos)
+                .pivot(egui::Align2::LEFT_TOP)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(200.0);
+                        ui.vertical(|ui| {
+                            ui.label(format!("「{}」をゴミ箱に移動しますか？", filename));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("はい").clicked() {
+                                    do_confirm = true;
+                                }
+                                if ui.button("いいえ").clicked() {
+                                    do_cancel = true;
+                                }
+                            });
+                        });
+                    });
+                });
+
+            // Escape key to cancel
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                do_cancel = true;
+            }
+            // Enter/Y/Space key to confirm
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Y) || i.key_pressed(egui::Key::Space)) {
+                do_confirm = true;
+            }
+        }
+        if do_confirm {
+            self.confirm_delete(ctx);
+        } else if do_cancel {
+            self.pending_delete = None;
+        }
 
         // Save state when dirty and separator drag ends
         if self.dirty || ctx.input(|i| i.pointer.any_released()) {
