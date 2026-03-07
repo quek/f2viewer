@@ -67,7 +67,21 @@ pub fn render_pane(
         // Duration slider
         ui.horizontal(|ui| {
             ui.label("表示間隔:");
-            ui.add(egui::Slider::new(&mut pane.display_duration, 0.5..=60.0).suffix("秒"));
+            // Use a custom mapping: slider [0..1] -> quadratic curve
+            // t^2 * (max - min) + min gives more resolution at lower values
+            let min = 0.5_f32;
+            let max = 60.0_f32;
+            let t = ((pane.display_duration - min) / (max - min)).sqrt();
+            let mut t_slider = t;
+            ui.add(egui::Slider::new(&mut t_slider, 0.0..=1.0).custom_formatter(
+                |t, _| {
+                    let val = t as f32 * t as f32 * (max - min) + min;
+                    format!("{:.1}秒", val)
+                },
+            ));
+            if t_slider != t {
+                pane.display_duration = t_slider * t_slider * (max - min) + min;
+            }
         });
 
         // Pause toggle
