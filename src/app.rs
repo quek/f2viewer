@@ -273,13 +273,29 @@ impl F2ViewerApp {
     fn update_timers(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         let mut min_remaining = Duration::from_secs(60);
+        let rescan_interval = Duration::from_secs(10);
 
         for pane in self.panes.values_mut() {
-            if pane.needs_rescan {
-                if let Some(ref dir) = pane.directory {
-                    pane.image_files = image_loader::scan_directory(dir);
+            // Periodic rescan: every 10 seconds, refresh the file list
+            if pane.directory.is_some() {
+                let should_rescan = pane.needs_rescan
+                    || pane
+                        .last_scan
+                        .is_none_or(|t| now.duration_since(t) >= rescan_interval);
+                if should_rescan {
+                    if let Some(ref dir) = pane.directory {
+                        let old_current = pane.current_image_path.clone();
+                        pane.image_files = image_loader::scan_directory(dir);
+                        // Adjust seq_index to match current image position after rescan
+                        if let Some(ref current) = old_current {
+                            if let Some(pos) = pane.image_files.iter().position(|f| f == current) {
+                                pane.seq_index = pos + 1;
+                            }
+                        }
+                    }
+                    pane.last_scan = Some(now);
+                    pane.needs_rescan = false;
                 }
-                pane.needs_rescan = false;
             }
 
             if pane.paused || pane.image_files.is_empty() {
@@ -294,36 +310,42 @@ impl F2ViewerApp {
             };
 
             if should_switch {
-                let next = match pane.display_mode {
-                    DisplayMode::Random => {
-                        let current = pane.current_image_path.as_deref();
-                        image_loader::pick_random_image(&pane.image_files, current)
-                    }
-                    DisplayMode::Sequential => {
-                        if pane.image_files.is_empty() {
-                            None
-                        } else if pane.seq_index < pane.image_files.len() {
-                            let path = pane.image_files[pane.seq_index].clone();
-                            pane.seq_index += 1;
-                            Some(path)
-                        } else {
-                            // Reached the end: stop (no loop)
-                            pane.paused = true;
-                            None
+                // Try loading with retry on failure (file may have been deleted externally)
+                for _ in 0..5 {
+                    let next = match pane.display_mode {
+                        DisplayMode::Random => {
+                            let current = pane.current_image_path.as_deref();
+                            image_loader::pick_random_image(&pane.image_files, current)
                         }
+                        DisplayMode::Sequential => {
+                            if pane.image_files.is_empty() {
+                                None
+                            } else if pane.seq_index < pane.image_files.len() {
+                                let path = pane.image_files[pane.seq_index].clone();
+                                pane.seq_index += 1;
+                                Some(path)
+                            } else {
+                                pane.paused = true;
+                                None
+                            }
+                        }
+                    };
+                    let Some(path) = next else { break };
+                    if let Some(tex) = image_loader::load_texture(ctx, &path) {
+                        pane.texture = Some(tex);
+                        pane.current_image_path = Some(path.clone());
+                        pane.last_switch = Some(now);
+                        if pane.history_pos > 0 {
+                            let len = pane.history.len();
+                            pane.history.truncate(len - pane.history_pos);
+                            pane.history_pos = 0;
+                        }
+                        pane.history.push(path);
+                        break;
+                    } else {
+                        // File unreadable (deleted?), remove from list and retry
+                        pane.image_files.retain(|p| p != &path);
                     }
-                };
-                if let Some(path) = next {
-                    pane.texture = image_loader::load_texture(ctx, &path);
-                    pane.current_image_path = Some(path.clone());
-                    pane.last_switch = Some(now);
-                    // Truncate forward history and push new entry
-                    if pane.history_pos > 0 {
-                        let len = pane.history.len();
-                        pane.history.truncate(len - pane.history_pos);
-                        pane.history_pos = 0;
-                    }
-                    pane.history.push(path);
                 }
             }
 

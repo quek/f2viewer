@@ -29,6 +29,8 @@ pub struct ImagePane {
     pub last_switch: Option<Instant>,
     #[serde(skip)]
     pub needs_rescan: bool,
+    #[serde(skip)]
+    pub last_scan: Option<Instant>,
     /// Current index for sequential mode.
     #[serde(skip)]
     pub seq_index: usize,
@@ -52,6 +54,7 @@ impl Default for ImagePane {
             texture: None,
             last_switch: None,
             needs_rescan: false,
+            last_scan: None,
             seq_index: 0,
             history: Vec::new(),
             history_pos: 0,
@@ -71,6 +74,7 @@ impl ImagePane {
             texture: None,
             last_switch: None,
             needs_rescan: false,
+            last_scan: None,
             seq_index: 0,
             history: Vec::new(),
             history_pos: 0,
