@@ -296,6 +296,13 @@ impl F2ViewerApp {
                     pane.last_scan = Some(now);
                     pane.needs_rescan = false;
                 }
+                // Keep repaint schedule aligned with next rescan
+                if let Some(last_scan) = pane.last_scan {
+                    let since_scan = now.duration_since(last_scan);
+                    if since_scan < rescan_interval {
+                        min_remaining = min_remaining.min(rescan_interval - since_scan);
+                    }
+                }
             }
 
             if pane.paused || pane.image_files.is_empty() {
