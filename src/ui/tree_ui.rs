@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use egui::{Color32, CursorIcon, Rect, Stroke, UiBuilder, vec2};
 
@@ -19,8 +20,9 @@ pub fn render_tree(
     panes: &mut HashMap<PaneId, ImagePane>,
     is_root_single: bool,
     actions: &mut Vec<PaneAction>,
+    shown: &HashSet<PathBuf>,
 ) {
-    render_node(ui, tree, panes, is_root_single, actions);
+    render_node(ui, tree, panes, is_root_single, actions, shown);
 }
 
 fn render_node(
@@ -29,11 +31,12 @@ fn render_node(
     panes: &mut HashMap<PaneId, ImagePane>,
     is_root_single: bool,
     actions: &mut Vec<PaneAction>,
+    shown: &HashSet<PathBuf>,
 ) {
     match tree {
         SplitTree::Leaf { id } => {
             if let Some(pane) = panes.get_mut(id) {
-                if let Some(action) = pane_ui::render_pane(ui, *id, pane, is_root_single) {
+                if let Some(action) = pane_ui::render_pane(ui, *id, pane, is_root_single, shown) {
                     actions.push(action);
                 }
             }
@@ -51,11 +54,11 @@ fn render_node(
 
             // Render first child
             let mut child_ui = ui.new_child(UiBuilder::new().max_rect(first_rect));
-            render_node(&mut child_ui, first, panes, false, actions);
+            render_node(&mut child_ui, first, panes, false, actions, shown);
 
             // Render second child
             let mut child_ui = ui.new_child(UiBuilder::new().max_rect(second_rect));
-            render_node(&mut child_ui, second, panes, false, actions);
+            render_node(&mut child_ui, second, panes, false, actions, shown);
 
             // Draw separator
             draw_separator(ui, _sep_rect, *direction);

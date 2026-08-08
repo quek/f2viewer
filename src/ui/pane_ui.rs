@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use egui::{Color32, Rect, Stroke, StrokeKind, Vec2, vec2};
 
 use crate::pane::{DisplayMode, ImagePane};
@@ -11,6 +14,7 @@ pub fn render_pane(
     pane_id: PaneId,
     pane: &mut ImagePane,
     is_root: bool,
+    shown: &HashSet<PathBuf>,
 ) -> Option<PaneAction> {
     let rect = ui.available_rect_before_wrap();
     ui.allocate_rect(rect, egui::Sense::hover());
@@ -184,7 +188,7 @@ pub fn render_pane(
             ui.label(format!(
                 "画像数: {} (未表示 {})",
                 pane.image_files.len(),
-                pane.unshown_count()
+                pane.unshown_count(shown)
             ));
         }
 

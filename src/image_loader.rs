@@ -46,7 +46,9 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Pick a random image, preferring ones not displayed yet in the current cycle.
-/// Once every file has been shown, `shown` is cleared and a new cycle starts.
+/// `shown` is shared by every pane, so an image displayed anywhere is deprioritized
+/// everywhere. Once every file in `files` has been shown, those files are dropped from
+/// `shown` and a new cycle starts (other directories keep their progress).
 /// The current image is avoided if possible.
 pub fn pick_random_image(
     files: &[PathBuf],
@@ -63,8 +65,10 @@ pub fn pick_random_image(
         .collect();
 
     if candidates.is_empty() {
-        // Everything has been shown: start a new cycle
-        shown.clear();
+        // Everything here has been shown: start a new cycle for this list only
+        for f in files {
+            shown.remove(f);
+        }
         candidates = files
             .iter()
             .filter(|p| current.is_none_or(|c| c != p.as_path()))
@@ -131,6 +135,35 @@ mod tests {
         let next = pick_random_image(&files, current.as_deref(), &mut shown).unwrap();
         assert_ne!(Some(&next), current.as_ref());
         assert!(shown.is_empty(), "cycle should have been reset");
+    }
+
+    #[test]
+    fn reset_only_forgets_the_list_it_cycled() {
+        // Two panes on different directories share one `shown` set
+        let dir_a = files(&["a/1", "a/2"]);
+        let dir_b = files(&["b/1", "b/2"]);
+        let mut shown: HashSet<PathBuf> = dir_a.iter().chain(dir_b.iter()).cloned().collect();
+
+        // Cycling dir_a must not wipe dir_b's progress
+        pick_random_image(&dir_a, None, &mut shown).unwrap();
+        assert_eq!(
+            shown,
+            dir_b.iter().cloned().collect::<HashSet<_>>(),
+            "only the cycled directory should be forgotten"
+        );
+    }
+
+    #[test]
+    fn a_second_pane_skips_what_the_first_showed() {
+        let files = files(&["a", "b"]);
+        let mut shown = HashSet::new();
+
+        let first = pick_random_image(&files, None, &mut shown).unwrap();
+        shown.insert(first.clone());
+
+        // Another pane on the same directory picks the other image
+        let second = pick_random_image(&files, None, &mut shown).unwrap();
+        assert_ne!(second, first);
     }
 
     #[test]

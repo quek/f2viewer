@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -134,6 +134,9 @@ pub struct F2ViewerApp {
     pending_delete: Option<PendingDelete>,
     fullscreen: Option<FullscreenState>,
     copy_toast: Option<Instant>,
+    /// Images already displayed, shared by every pane so nothing repeats across the
+    /// whole window until each pane's directory has been covered.
+    shown: HashSet<PathBuf>,
 }
 
 impl F2ViewerApp {
@@ -149,6 +152,7 @@ impl F2ViewerApp {
                 pending_delete: None,
                 fullscreen: None,
                 copy_toast: None,
+                shown: HashSet::new(),
             };
             // Rescan directories and load initial image for all restored panes
             for pane in app.panes.values_mut() {
@@ -158,13 +162,13 @@ impl F2ViewerApp {
                         let next = image_loader::pick_random_image(
                             &pane.image_files,
                             None,
-                            &mut pane.shown,
+                            &mut app.shown,
                         );
                         if let Some(path) = next {
                             pane.texture = image_loader::load_texture(&cc.egui_ctx, &path);
                             pane.current_image_path = Some(path.clone());
                             pane.last_switch = Some(Instant::now());
-                            pane.mark_shown(&path);
+                            app.shown.insert(path.clone());
                             pane.history.push(path);
                         }
                     }
@@ -183,6 +187,7 @@ impl F2ViewerApp {
                 pending_delete: None,
                 fullscreen: None,
                 copy_toast: None,
+                shown: HashSet::new(),
             }
         }
     }
@@ -330,7 +335,7 @@ impl F2ViewerApp {
                             image_loader::pick_random_image(
                                 &pane.image_files,
                                 current.as_deref(),
-                                &mut pane.shown,
+                                &mut self.shown,
                             )
                         }
                         DisplayMode::Sequential => {
@@ -351,7 +356,7 @@ impl F2ViewerApp {
                         pane.texture = Some(tex);
                         pane.current_image_path = Some(path.clone());
                         pane.last_switch = Some(now);
-                        pane.mark_shown(&path);
+                        self.shown.insert(path.clone());
                         if pane.history_pos > 0 {
                             let len = pane.history.len();
                             pane.history.truncate(len - pane.history_pos);
@@ -406,8 +411,8 @@ impl F2ViewerApp {
                             pane.current_image_path = None;
                             pane.texture = None;
                             pane.last_switch = None;
-                            // New directory: nothing has been shown yet
-                            pane.shown.clear();
+                            // Keep `shown` as is: images seen in another pane stay
+                            // deprioritized, and a fresh directory is unshown anyway
                             pane.history.clear();
                             pane.history_pos = 0;
                             pane.seq_index = 0;
@@ -479,7 +484,7 @@ impl F2ViewerApp {
                     pane.texture = image_loader::load_texture(ctx, &path);
                     pane.current_image_path = Some(path.clone());
                     pane.last_switch = Some(Instant::now());
-                    pane.mark_shown(&path);
+                    self.shown.insert(path);
                     break;
                 }
             }
@@ -497,7 +502,7 @@ impl F2ViewerApp {
                         pane.texture = image_loader::load_texture(ctx, &path);
                         pane.current_image_path = Some(path.clone());
                         pane.last_switch = Some(Instant::now());
-                        pane.mark_shown(&path);
+                        self.shown.insert(path);
                         found = true;
                         break;
                     }
@@ -514,7 +519,7 @@ impl F2ViewerApp {
                         image_loader::pick_random_image(
                             &pane.image_files,
                             current.as_deref(),
-                            &mut pane.shown,
+                            &mut self.shown,
                         )
                     }
                     DisplayMode::Sequential => {
@@ -531,7 +536,7 @@ impl F2ViewerApp {
                     pane.texture = image_loader::load_texture(ctx, &path);
                     pane.current_image_path = Some(path.clone());
                     pane.last_switch = Some(Instant::now());
-                    pane.mark_shown(&path);
+                    self.shown.insert(path.clone());
                     pane.history.push(path);
                 }
             }
@@ -591,7 +596,7 @@ impl F2ViewerApp {
 
         // Remove from image list
         pane.image_files.retain(|p| p != &pending.path);
-        pane.shown.remove(&pending.path);
+        self.shown.remove(&pending.path);
         pane.current_image_path = None;
         pane.texture = None;
         pane.last_switch = None;
@@ -608,7 +613,7 @@ impl F2ViewerApp {
                 pane.texture = image_loader::load_texture(ctx, &path);
                 pane.current_image_path = Some(path.clone());
                 pane.last_switch = Some(Instant::now());
-                pane.mark_shown(&path);
+                self.shown.insert(path);
                 found = true;
                 break;
             }
@@ -616,12 +621,12 @@ impl F2ViewerApp {
         if !found {
             pane.history_pos = 0;
             if let Some(next) =
-                image_loader::pick_random_image(&pane.image_files, None, &mut pane.shown)
+                image_loader::pick_random_image(&pane.image_files, None, &mut self.shown)
             {
                 pane.texture = image_loader::load_texture(ctx, &next);
                 pane.current_image_path = Some(next.clone());
                 pane.last_switch = Some(Instant::now());
-                pane.mark_shown(&next);
+                self.shown.insert(next.clone());
                 pane.history.push(next);
             }
         }
@@ -724,6 +729,7 @@ impl eframe::App for F2ViewerApp {
                         &mut self.panes,
                         is_root_single,
                         &mut actions,
+                        &self.shown,
                     );
 
                     tree_ui::handle_separator_drag(ui, &mut self.tree, panel_rect);
