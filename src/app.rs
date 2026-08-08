@@ -103,7 +103,7 @@ struct FullscreenState {
     saved_paused: HashMap<PaneId, bool>,
 }
 use crate::ui::controls::PaneAction;
-use crate::ui::tree_ui;
+use crate::ui::{pane_ui, tree_ui};
 
 /// Serializable state for persistence across restarts.
 #[derive(Serialize, Deserialize)]
@@ -439,6 +439,9 @@ impl F2ViewerApp {
                 PaneAction::CopyImage(pane_id) => {
                     self.copy_image_to_clipboard(pane_id);
                 }
+                PaneAction::DragImage(pane_id) => {
+                    self.drag_image_to_other_app(pane_id, ctx);
+                }
             }
         }
         self.dirty = true;
@@ -644,6 +647,30 @@ impl F2ViewerApp {
         });
     }
 
+    /// Hand the current image to another application via OLE drag and drop.
+    /// The modal drag loop blocks until the user drops or cancels.
+    fn drag_image_to_other_app(&mut self, pane_id: PaneId, ctx: &egui::Context) {
+        let Some(pane) = self.panes.get(&pane_id) else {
+            return;
+        };
+        let Some(path) = pane.current_image_path.clone() else {
+            return;
+        };
+
+        if let Err(e) = crate::drag_drop::drag_file(&path) {
+            log::warn!("Drag and drop failed for {:?}: {}", path, e);
+        }
+
+        // The drag loop swallows the button release, so egui would otherwise keep
+        // believing the primary button is held down
+        ctx.input_mut(|i| i.pointer = egui::PointerState::default());
+
+        // Give the dropped image its full interval again instead of switching instantly
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.last_switch = Some(Instant::now());
+        }
+    }
+
     fn copy_image_to_clipboard(&mut self, pane_id: PaneId) {
         let Some(pane) = self.panes.get(&pane_id) else {
             return;
@@ -675,6 +702,7 @@ impl eframe::App for F2ViewerApp {
 
         let mut actions = Vec::new();
         let mut exit_fs = false;
+        let mut fs_drag = false;
 
         if let Some(ref fs) = self.fullscreen {
             // Fullscreen: render single pane image filling the entire panel
@@ -697,6 +725,12 @@ impl eframe::App for F2ViewerApp {
                                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                                 Color32::WHITE,
                             );
+                            // Drag the image out to another application
+                            fs_drag = pane_ui::drag_started_on_image(
+                                ui,
+                                egui::Id::new("fullscreen_drag"),
+                                image_rect,
+                            );
                         }
                     }
                 });
@@ -716,6 +750,9 @@ impl eframe::App for F2ViewerApp {
             }
             if ctx.input(|i| i.key_pressed(egui::Key::C)) {
                 self.copy_image_to_clipboard(fs_pane_id);
+            }
+            if fs_drag {
+                self.drag_image_to_other_app(fs_pane_id, ctx);
             }
         } else {
             let is_root_single = self.tree.is_single_leaf();

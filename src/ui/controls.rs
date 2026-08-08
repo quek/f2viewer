@@ -13,4 +13,6 @@ pub enum PaneAction {
     NavigateBackward(PaneId),
     Fullscreen(PaneId),
     CopyImage(PaneId),
+    /// Start an OLE drag so the current image can be dropped into another application.
+    DragImage(PaneId),
 }

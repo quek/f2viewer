@@ -1,4 +1,5 @@
 mod app;
+mod drag_drop;
 mod image_loader;
 mod pane;
 mod split_tree;

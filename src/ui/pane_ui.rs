@@ -35,16 +35,18 @@ pub fn render_pane(
     );
 
     // Display image or placeholder
+    let mut image_rect = None;
     if let Some(ref texture) = pane.texture {
         let tex_size = texture.size_vec2();
         let fitted = fit_to_rect(tex_size, rect);
-        let image_rect = center_in_rect(fitted, rect);
+        let fitted_rect = center_in_rect(fitted, rect);
         ui.painter().image(
             texture.id(),
-            image_rect,
+            fitted_rect,
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             Color32::WHITE,
         );
+        image_rect = Some(fitted_rect);
     } else {
         let center = rect.center();
         ui.painter().text(
@@ -112,6 +114,14 @@ pub fn render_pane(
                 action = Some(PaneAction::CopyImage(pane_id));
             }
         });
+    }
+
+    // Drag the image out to another application. Senses only the image area, and only
+    // drags, so the pane's click sense and the separators between panes are untouched.
+    if let Some(image_rect) = image_rect {
+        if drag_started_on_image(ui, ui.id().with(("pane_drag", pane_id)), image_rect) {
+            action = Some(PaneAction::DragImage(pane_id));
+        }
     }
 
     // Context menu for controls
@@ -202,6 +212,16 @@ pub fn render_pane(
     });
 
     action
+}
+
+/// Sense a primary-button drag starting on the displayed image, and show a grab cursor
+/// so the image reads as draggable. Returns true when a drag has just begun.
+pub fn drag_started_on_image(ui: &mut egui::Ui, id: egui::Id, image_rect: Rect) -> bool {
+    let response = ui.interact(image_rect, id, egui::Sense::drag());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    response.drag_started_by(egui::PointerButton::Primary)
 }
 
 /// Scale size to fit within rect while maintaining aspect ratio.

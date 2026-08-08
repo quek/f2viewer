@@ -949,6 +949,8 @@ dependencies = [
  "serde_json",
  "trash",
  "walkdir",
+ "windows",
+ "windows-core 0.56.0",
 ]
 
 [[package]]
