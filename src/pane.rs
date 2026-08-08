@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use egui::TextureHandle;
@@ -40,6 +41,9 @@ pub struct ImagePane {
     /// Current position in history (-1 based from end). 0 = at latest.
     #[serde(skip)]
     pub history_pos: usize,
+    /// Images already displayed in the current cycle (random mode picks unshown ones first).
+    #[serde(skip)]
+    pub shown: HashSet<PathBuf>,
 }
 
 impl Default for ImagePane {
@@ -58,6 +62,7 @@ impl Default for ImagePane {
             seq_index: 0,
             history: Vec::new(),
             history_pos: 0,
+            shown: HashSet::new(),
         }
     }
 }
@@ -78,6 +83,8 @@ impl ImagePane {
             seq_index: 0,
             history: Vec::new(),
             history_pos: 0,
+            // Keep the parent's seen set so the split panes don't repeat what was just shown
+            shown: other.shown.clone(),
         }
     }
 
@@ -89,5 +96,18 @@ impl ImagePane {
             display_mode: self.display_mode,
             ..Default::default()
         }
+    }
+
+    /// Record that `path` is being displayed, so it is deprioritized until the cycle resets.
+    pub fn mark_shown(&mut self, path: &Path) {
+        self.shown.insert(path.to_path_buf());
+    }
+
+    /// Number of images in the current list that have not been displayed yet.
+    pub fn unshown_count(&self) -> usize {
+        self.image_files
+            .iter()
+            .filter(|p| !self.shown.contains(*p))
+            .count()
     }
 }

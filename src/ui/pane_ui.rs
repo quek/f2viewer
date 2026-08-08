@@ -181,7 +181,11 @@ pub fn render_pane(
         if let Some(ref dir) = pane.directory {
             ui.separator();
             ui.label(format!("📂 {}", dir.display()));
-            ui.label(format!("画像数: {}", pane.image_files.len()));
+            ui.label(format!(
+                "画像数: {} (未表示 {})",
+                pane.image_files.len(),
+                pane.unshown_count()
+            ));
         }
 
         if !is_root {

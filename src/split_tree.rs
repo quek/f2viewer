@@ -107,6 +107,18 @@ impl SplitTree {
 mod tests {
     use super::*;
 
+    /// Collect leaf ids in left-to-right layout order.
+    fn leaf_ids(tree: &SplitTree) -> Vec<PaneId> {
+        match tree {
+            SplitTree::Leaf { id } => vec![*id],
+            SplitTree::Split { first, second, .. } => {
+                let mut ids = leaf_ids(first);
+                ids.extend(leaf_ids(second));
+                ids
+            }
+        }
+    }
+
     #[test]
     fn test_split_and_unsplit() {
         let mut tree = SplitTree::new_leaf(0);
@@ -115,15 +127,15 @@ mod tests {
         // Split leaf 0 into leaves 1 and 2
         assert!(tree.split(0, SplitDirection::Vertical, 1, 2));
         assert!(!tree.is_single_leaf());
-        assert_eq!(tree.leaf_ids(), vec![1, 2]);
+        assert_eq!(leaf_ids(&tree), vec![1, 2]);
 
         // Split leaf 1 into leaves 3 and 4
         assert!(tree.split(1, SplitDirection::Horizontal, 3, 4));
-        assert_eq!(tree.leaf_ids(), vec![3, 4, 2]);
+        assert_eq!(leaf_ids(&tree), vec![3, 4, 2]);
 
         // Unsplit leaf 3 (sibling 4 replaces the parent)
         let removed = tree.unsplit(3);
         assert_eq!(removed, vec![3]);
-        assert_eq!(tree.leaf_ids(), vec![4, 2]);
+        assert_eq!(leaf_ids(&tree), vec![4, 2]);
     }
 }
